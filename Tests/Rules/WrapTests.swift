@@ -550,7 +550,7 @@ final class WrapTests: XCTestCase {
         \"""
         """
         let options = FormatOptions(wrapArguments: .afterFirst, wrapStringInterpolation: false, maxWidth: 40)
-        testFormatting(for: input, rule: .wrap, options: options)
+        testFormatting(for: input, rule: .wrap, options: options, exclude: [.wrapStrings])
     }
 
     func testPreserveMultiLineStringInterpolationWrapBeforeFirst() {
@@ -560,7 +560,7 @@ final class WrapTests: XCTestCase {
         \"""
         """
         let options = FormatOptions(wrapArguments: .beforeFirst, wrapStringInterpolation: false, maxWidth: 40)
-        testFormatting(for: input, rule: .wrap, options: options)
+        testFormatting(for: input, rule: .wrap, options: options, exclude: [.wrapStrings])
     }
 
     func testPreserveCustomMultiLineStringInterpolationWrapBeforeFirst() {
@@ -570,7 +570,7 @@ final class WrapTests: XCTestCase {
         """
         """#
         let options = FormatOptions(wrapArguments: .beforeFirst, wrapStringInterpolation: false, maxWidth: 40)
-        testFormatting(for: input, rule: .wrap, options: options)
+        testFormatting(for: input, rule: .wrap, options: options, exclude: [.wrapStrings])
     }
 
     // ternary expressions

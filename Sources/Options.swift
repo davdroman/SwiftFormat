@@ -86,6 +86,12 @@ public enum WrapEnumCases: String, CaseIterable {
     case withValues = "with-values"
 }
 
+/// Which string literal forms can be wrapped
+public enum WrapStringsMode: String, CaseIterable {
+    case always
+    case multilineOnly = "multiline-only"
+}
+
 /// Argument type for stripping
 public enum ArgumentStrippingMode: String, CaseIterable {
     case unnamedOnly = "unnamed-only"
@@ -829,6 +835,7 @@ public struct FormatOptions: CustomStringConvertible {
     public var wrapConditions: WrapMode
     public var wrapTernaryOperators: TernaryOperatorWrapMode
     public var wrapStringInterpolation: Bool
+    public var wrapStrings: WrapStringsMode
     public var uppercaseHex: Bool
     public var uppercaseExponent: Bool
     public var decimalGrouping: Grouping
@@ -982,6 +989,7 @@ public struct FormatOptions: CustomStringConvertible {
                 wrapConditions: WrapMode = .preserve,
                 wrapTernaryOperators: TernaryOperatorWrapMode = .default,
                 wrapStringInterpolation: Bool = false,
+                wrapStrings: WrapStringsMode = .multilineOnly,
                 uppercaseHex: Bool = true,
                 uppercaseExponent: Bool = false,
                 decimalGrouping: Grouping = .group(3, 6),
@@ -1124,6 +1132,7 @@ public struct FormatOptions: CustomStringConvertible {
         self.wrapConditions = wrapConditions
         self.wrapTernaryOperators = wrapTernaryOperators
         self.wrapStringInterpolation = wrapStringInterpolation
+        self.wrapStrings = wrapStrings
         self.uppercaseHex = uppercaseHex
         self.uppercaseExponent = uppercaseExponent
         self.decimalGrouping = decimalGrouping

@@ -163,6 +163,7 @@ let ruleRegistry: [String: FormatRule] = [
     "wrapMultilineStatementBraces": .wrapMultilineStatementBraces,
     "wrapPropertyBodies": .wrapPropertyBodies,
     "wrapSingleLineComments": .wrapSingleLineComments,
+    "wrapStrings": .wrapStrings,
     "wrapSwitchCases": .wrapSwitchCases,
     "yodaConditions": .yodaConditions,
 ]

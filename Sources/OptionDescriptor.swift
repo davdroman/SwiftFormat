@@ -736,6 +736,12 @@ struct _Descriptors {
         trueValues: ["true", "default"], // "default" was previously the default value, but is now deprecated.
         falseValues: ["false", "preserve"]
     )
+    let wrapStrings = OptionDescriptor(
+        argumentName: "wrap-strings",
+        displayName: "Wrap String Literals",
+        help: "String literal wrapping:",
+        keyPath: \.wrapStrings
+    )
     let closingParenPosition = OptionDescriptor(
         argumentName: "closing-paren",
         displayName: "Closing Paren Position",
