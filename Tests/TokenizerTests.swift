@@ -4891,6 +4891,61 @@ final class TokenizerTests: XCTestCase {
         XCTAssertEqual(tokenize(input), output)
     }
 
+    func testOperatorsBeforeConsumeAndDiscardFunctions() {
+        let input = """
+        foo+consume(x)
+        bar+discard(y)
+        condition ? consume(x) : fallback
+        """
+        let output: [Token] = [
+            .identifier("foo"),
+            .operator("+", .infix),
+            .identifier("consume"),
+            .startOfScope("("),
+            .identifier("x"),
+            .endOfScope(")"),
+            .linebreak("\n", 1),
+            .identifier("bar"),
+            .operator("+", .infix),
+            .identifier("discard"),
+            .startOfScope("("),
+            .identifier("y"),
+            .endOfScope(")"),
+            .linebreak("\n", 2),
+            .identifier("condition"),
+            .space(" "),
+            .operator("?", .infix),
+            .space(" "),
+            .identifier("consume"),
+            .startOfScope("("),
+            .identifier("x"),
+            .endOfScope(")"),
+            .space(" "),
+            .operator(":", .infix),
+            .space(" "),
+            .identifier("fallback"),
+        ]
+        XCTAssertEqual(tokenize(input), output)
+    }
+
+    func testOperatorBeforeKeywordArgumentLabel() {
+        let input = """
+        f(foo+for: x)
+        """
+        let output: [Token] = [
+            .identifier("f"),
+            .startOfScope("("),
+            .identifier("foo"),
+            .operator("+", .infix),
+            .identifier("for"),
+            .delimiter(":"),
+            .space(" "),
+            .identifier("x"),
+            .endOfScope(")"),
+        ]
+        XCTAssertEqual(tokenize(input), output)
+    }
+
     func testConsumeLabel() {
         let input = "func foo(consume bar: Int)"
         let output: [Token] = [

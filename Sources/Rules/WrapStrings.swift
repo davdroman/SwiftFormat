@@ -17,31 +17,56 @@ public extension FormatRule {
         options: ["wrap-strings"],
         sharedOptions: ["max-width", "indent", "tab-width", "asset-literals", "linebreaks"]
     ) { formatter in
-        guard formatter.options.maxWidth > 0 else {
-            return
-        }
-
+        var metadata = [Formatter.WrapStringMetadata]()
+        var metadataIndex = 0
+        var measuredLine: (physicalLine: Int, tokenCount: Int, length: Int)?
+        var physicalLine = 0
         var stringContexts = [(
-            range: AutoUpdatingRange,
-            isQuoted: Bool,
-            isValid: Bool,
-            processedThroughLineEnd: AutoUpdatingIndex?
+            range: ClosedRange<Int>?,
+            tokenCountAtStart: Int,
+            wrappedOriginalLine: Int?,
+            processedPhysicalLine: Int?
         )]()
         formatter.forEachToken(onlyWhereEnabled: false) { index, token in
-            if token.isStartOfScope, token.isStringDelimiter,
-               let endOfString = formatter.endOfScope(at: index)
-            {
+            if token.isLinebreak {
+                physicalLine += 1
+            }
+
+            if token.isStartOfScope, token.isStringDelimiter {
+                let isQuoted = token.string.contains("\"")
+                let shouldProcess = isQuoted && (stringContexts.isEmpty || token.isMultilineStringDelimiter)
+                var stringMetadata: Formatter.WrapStringMetadata?
+                if stringContexts.isEmpty {
+                    metadata = formatter.endOfScope(at: index).map {
+                        formatter.wrapStringMetadata(in: index ... $0)
+                    } ?? []
+                    metadataIndex = 0
+                }
+                if metadataIndex < metadata.count {
+                    stringMetadata = metadata[metadataIndex]
+                    metadataIndex += 1
+                }
                 stringContexts.append((
-                    range: (index ... endOfString).autoUpdating(in: formatter),
-                    isQuoted: token.string.contains("\""),
-                    isValid: !formatter.tokens[index ... endOfString].contains(where: \.isError),
-                    processedThroughLineEnd: nil
+                    range: stringMetadata.flatMap {
+                        guard shouldProcess, $0.isSafe, let length = $0.length else {
+                            return nil
+                        }
+                        return index ... index + length - 1
+                    },
+                    tokenCountAtStart: formatter.tokens.count,
+                    wrappedOriginalLine: nil,
+                    processedPhysicalLine: nil
                 ))
                 return
             }
 
+            if token == .error(""), !stringContexts.isEmpty, stringContexts.last?.range == nil {
+                stringContexts.removeLast()
+                return
+            }
+
             if token.isEndOfScope, token.isStringDelimiter {
-                if stringContexts.last?.range.upperBound == index {
+                if !stringContexts.isEmpty {
                     stringContexts.removeLast()
                 }
                 return
@@ -49,27 +74,54 @@ public extension FormatRule {
 
             guard token.isStringBody,
                   let contextIndex = stringContexts.indices.last,
-                  stringContexts[contextIndex].isQuoted,
-                  stringContexts[contextIndex].isValid,
-                  formatter.isEnabled
+                  let initialStringRange = stringContexts[contextIndex].range
             else {
                 return
             }
 
-            if let processedThroughLineEnd = stringContexts[contextIndex].processedThroughLineEnd {
-                guard index > processedThroughLineEnd.index else {
-                    return
-                }
-                processedThroughLineEnd.index = formatter.endOfLine(at: index)
-            } else {
-                stringContexts[contextIndex].processedThroughLineEnd = formatter.endOfLine(at: index)
-                    .autoUpdating(in: formatter)
+            guard formatter.options.maxWidth > 0, formatter.isEnabled else {
+                return
             }
+            if stringContexts[contextIndex].processedPhysicalLine == physicalLine {
+                return
+            }
+            stringContexts[contextIndex].processedPhysicalLine = physicalLine
+            let lineLength: Int
+            if let measuredLine,
+               measuredLine.physicalLine == physicalLine,
+               measuredLine.tokenCount == formatter.tokens.count
+            {
+                lineLength = measuredLine.length
+            } else {
+                lineLength = formatter.lineLength(at: index)
+                measuredLine = (physicalLine, formatter.tokens.count, lineLength)
+            }
+            guard lineLength > formatter.options.maxWidth else {
+                return
+            }
+            let lineEnd = formatter.endOfLine(at: index)
+            let originalLine: Int
+            if case let .linebreak(_, line)? = formatter.token(at: lineEnd) {
+                originalLine = line
+            } else {
+                originalLine = formatter.originalLine(at: index)
+            }
+            if stringContexts[contextIndex].wrappedOriginalLine == originalLine {
+                return
+            }
+            let tokenDelta = formatter.tokens.count - stringContexts[contextIndex].tokenCountAtStart
+            let stringRange = (
+                initialStringRange.lowerBound ... initialStringRange.upperBound + tokenDelta
+            ).autoUpdating(in: formatter)
+            let tokenCountBeforeWrapping = formatter.tokens.count
             formatter.wrapStringBody(
                 at: index,
-                in: stringContexts[contextIndex].range,
+                in: stringRange,
                 canConvertToMultiline: stringContexts.count == 1
             )
+            if formatter.tokens.count != tokenCountBeforeWrapping {
+                stringContexts[contextIndex].wrappedOriginalLine = originalLine
+            }
         }
     } examples: {
         """
@@ -97,16 +149,117 @@ public extension FormatRule {
 }
 
 extension Formatter {
+    struct WrapStringMetadata {
+        var startIndex: Int
+        var endIndex: Int
+        var length: Int?
+        var isSafe: Bool
+    }
+
+    func wrapStringMetadata(in stringRange: ClosedRange<Int>) -> [WrapStringMetadata] {
+        var contexts = [(
+            startIndex: Int,
+            isValid: Bool,
+            containsSourceLocationLiteral: Bool
+        )]()
+        var metadata = [WrapStringMetadata]()
+
+        func closeContext(at endIndex: Int, isValid: Bool) {
+            guard var context = contexts.popLast() else {
+                return
+            }
+            context.isValid = context.isValid && isValid
+            metadata.append(WrapStringMetadata(
+                startIndex: context.startIndex,
+                endIndex: endIndex,
+                length: context.isValid ? endIndex - context.startIndex + 1 : nil,
+                isSafe: context.isValid && !context.containsSourceLocationLiteral
+            ))
+            if let parentIndex = contexts.indices.last {
+                contexts[parentIndex].isValid = contexts[parentIndex].isValid && context.isValid
+                contexts[parentIndex].containsSourceLocationLiteral =
+                    contexts[parentIndex].containsSourceLocationLiteral || context.containsSourceLocationLiteral
+            }
+        }
+
+        guard let tokens = tokens(in: stringRange) else {
+            return []
+        }
+        for (index, token) in zip(tokens.indices, tokens) {
+            if token.isStartOfScope, token.isStringDelimiter {
+                contexts.append((
+                    startIndex: index,
+                    isValid: true,
+                    containsSourceLocationLiteral: false
+                ))
+            } else if token == .error("") {
+                closeContext(at: index, isValid: false)
+            } else if token.isEndOfScope, token.isStringDelimiter {
+                closeContext(at: index, isValid: true)
+            } else if let contextIndex = contexts.indices.last {
+                contexts[contextIndex].isValid = contexts[contextIndex].isValid && !token.isError
+                contexts[contextIndex].containsSourceLocationLiteral =
+                    contexts[contextIndex].containsSourceLocationLiteral ||
+                    token == .keyword("#line") || token == .keyword("#column")
+            }
+        }
+
+        metadata.sort { $0.startIndex < $1.startIndex }
+        var openContexts = [(endIndex: Int, isSafe: Bool)]()
+        var unsafeContextCount = 0
+        for index in metadata.indices {
+            while let context = openContexts.last, context.endIndex < metadata[index].startIndex {
+                if !context.isSafe {
+                    unsafeContextCount -= 1
+                }
+                openContexts.removeLast()
+            }
+            metadata[index].isSafe = metadata[index].isSafe && unsafeContextCount == 0
+            let context = (endIndex: metadata[index].endIndex, isSafe: metadata[index].isSafe)
+            openContexts.append(context)
+            if !context.isSafe {
+                unsafeContextCount += 1
+            }
+        }
+        return metadata
+    }
+
     func wrapStringBody(
         at bodyIndex: Int,
         in stringRange: AutoUpdatingRange,
         canConvertToMultiline: Bool
     ) {
+        guard options.maxWidth > 0 else {
+            return
+        }
         let startOfString = stringRange.lowerBound
         var bodyIndex = bodyIndex
+        let lineStart = startOfLine(at: bodyIndex)
         let lineEnd = endOfLine(at: bodyIndex)
-        let directiveScanEnd = min(lineEnd, stringRange.upperBound + 1)
-        guard !tokens[bodyIndex ..< directiveScanEnd].contains(where: {
+        let closingLineEnd = endOfLine(at: stringRange.upperBound)
+        let hashCount = tokens[startOfString].string.filter { $0 == "#" }.count
+        let continuation = "\\" + String(repeating: "#", count: hashCount)
+        let followsContinuation = index(
+            of: .nonSpaceOrCommentOrLinebreak,
+            before: lineStart
+        ).map {
+            guard case let .stringBody(body) = tokens[$0] else {
+                return false
+            }
+            return body.hasSuffix(continuation)
+        } ?? false
+        guard !tokens[(stringRange.upperBound + 1) ..< closingLineEnd].contains(where: {
+            if case let .commentBody(comment) = $0 {
+                return followsContinuation && comment.contains("swiftformat:options:this") ||
+                    ["disable", "enable", "options"].contains(where: {
+                        comment.contains("swiftformat:\($0):previous")
+                    })
+            }
+            return false
+        }) else {
+            return
+        }
+        guard !tokens[lineStart ..< lineEnd].contains(where: {
             if case let .commentBody(comment) = $0 {
                 return comment.contains("swiftformat:")
             }
@@ -119,8 +272,12 @@ extension Formatter {
             guard canConvertToMultiline,
                   options.wrapStrings == .always,
                   options.swiftVersion == .undefined || options.swiftVersion >= "4",
-                  onSameLine(startOfString, stringRange.upperBound),
-                  range.map({ $0.contains(startOfString) && $0.contains(stringRange.upperBound) }) ?? true,
+                  onSameLine(startOfString, stringRange.upperBound)
+            else {
+                return
+            }
+
+            guard range.map({ $0.contains(startOfString) && $0.contains(stringRange.upperBound) }) ?? true,
                   lineLength(
                       from: startOfLine(at: startOfString),
                       upTo: stringRange.upperBound + 1
@@ -134,8 +291,6 @@ extension Formatter {
             bodyIndex += convertStringToMultiline(from: startOfString, to: stringRange.upperBound)
         }
 
-        let hashCount = tokens[startOfString].string.filter { $0 == "#" }.count
-        let continuation = "\\" + String(repeating: "#", count: hashCount)
         let indent = currentIndentForLine(at: stringRange.upperBound)
         wrapStringLine(at: bodyIndex, continuation: continuation, indent: indent)
     }
@@ -152,40 +307,36 @@ extension Formatter {
         var opportunities = [(bodyIndex: Int, offset: Int, width: Int)]()
         var cumulativeWidth = lineLength(upTo: index)
         var previousBodyEnd = index
-        var scopeDepth = 0
+        var searchIndex = index
 
-        for currentIndex in index ..< lineEnd {
-            let token = tokens[currentIndex]
-            if token.isStartOfScope {
-                scopeDepth += 1
-            } else if token.isEndOfScope, scopeDepth > 0 {
-                scopeDepth -= 1
-            } else if scopeDepth == 0, case let .stringBody(body) = token {
-                cumulativeWidth += lineLength(from: previousBodyEnd, upTo: currentIndex)
-                let hasContentBefore = cumulativeWidth > indentWidth
-                var offset = 0
-                var bodyWidth = 0
-                var searchStart = body.startIndex
-                while let range = body.range(
-                    of: "[ \t]+",
-                    options: .regularExpression,
-                    range: searchStart ..< body.endIndex
-                ) {
-                    let segment = body[searchStart ..< range.upperBound]
-                    offset += segment.count
-                    bodyWidth += tokenLength(.stringBody(String(segment)))
-                    let suffix = body[range.upperBound...]
-                    let hasContentAfter = currentIndex + 1 < lineEnd ||
-                        (!suffix.isEmpty && suffix != continuation)
-                    if hasContentBefore || searchStart < range.lowerBound, hasContentAfter {
-                        opportunities.append((currentIndex, offset, cumulativeWidth + bodyWidth))
-                    }
-                    searchStart = range.upperBound
+        while let currentIndex = self.index(in: searchIndex ..< lineEnd, where: { $0.isStringBody }),
+              case let .stringBody(body) = tokens[currentIndex]
+        {
+            cumulativeWidth += lineLength(from: previousBodyEnd, upTo: currentIndex)
+            let hasContentBefore = cumulativeWidth > indentWidth
+            var offset = 0
+            var bodyWidth = 0
+            var searchStart = body.startIndex
+            while let range = body.range(
+                of: "[ \t]+",
+                options: .regularExpression,
+                range: searchStart ..< body.endIndex
+            ) {
+                let segment = body[searchStart ..< range.upperBound]
+                offset += segment.count
+                bodyWidth += tokenLength(.stringBody(String(segment)))
+                let suffix = body[range.upperBound...]
+                let hasContentAfter = currentIndex + 1 < lineEnd ||
+                    (!suffix.isEmpty && suffix != continuation)
+                if hasContentBefore || searchStart < range.lowerBound, hasContentAfter {
+                    opportunities.append((currentIndex, offset, cumulativeWidth + bodyWidth))
                 }
-                bodyWidth += tokenLength(.stringBody(String(body[searchStart...])))
-                cumulativeWidth += bodyWidth
-                previousBodyEnd = currentIndex + 1
+                searchStart = range.upperBound
             }
+            bodyWidth += tokenLength(.stringBody(String(body[searchStart...])))
+            cumulativeWidth += bodyWidth
+            previousBodyEnd = currentIndex + 1
+            searchIndex = currentIndex + 1
         }
 
         var linePrefixWidth = 0
@@ -222,54 +373,33 @@ extension Formatter {
             selectedOpportunities.removeAll(where: { !range.contains($0.bodyIndex) })
         }
 
-        guard let firstOpportunity = selectedOpportunities.first,
-              let lastOpportunity = selectedOpportunities.last
-        else {
+        guard !selectedOpportunities.isEmpty else {
             return
         }
 
-        let replacementRange = firstOpportunity.bodyIndex ... lastOpportunity.bodyIndex
-        var replacement = [Token]()
-        var replacementOpportunityIndex = selectedOpportunities.startIndex
-        for tokenIndex in replacementRange {
-            guard case let .stringBody(body) = tokens[tokenIndex],
-                  replacementOpportunityIndex < selectedOpportunities.endIndex,
-                  selectedOpportunities[replacementOpportunityIndex].bodyIndex == tokenIndex
-            else {
-                replacement.append(tokens[tokenIndex])
+        for opportunity in selectedOpportunities.reversed() {
+            guard case let .stringBody(body) = tokens[opportunity.bodyIndex] else {
                 continue
             }
-
-            var segmentStart = body.startIndex
-            var segmentStartOffset = 0
-            while replacementOpportunityIndex < selectedOpportunities.endIndex,
-                  selectedOpportunities[replacementOpportunityIndex].bodyIndex == tokenIndex
-            {
-                let opportunity = selectedOpportunities[replacementOpportunityIndex]
-                let breakIndex = body.index(
-                    segmentStart,
-                    offsetBy: opportunity.offset - segmentStartOffset
-                )
-                replacement.append(.stringBody(String(body[segmentStart ..< breakIndex]) + continuation))
-                replacement.append(linebreakToken(for: tokenIndex))
-                if !indent.isEmpty {
-                    replacement.append(.space(indent))
-                }
-                segmentStart = breakIndex
-                segmentStartOffset = opportunity.offset
-                replacementOpportunityIndex += 1
+            let breakIndex = body.index(body.startIndex, offsetBy: opportunity.offset)
+            var replacement: [Token] = [
+                .stringBody(String(body[..<breakIndex]) + continuation),
+                linebreakToken(for: opportunity.bodyIndex),
+            ]
+            if !indent.isEmpty {
+                replacement.append(.space(indent))
             }
-            if segmentStart < body.endIndex {
-                replacement.append(.stringBody(String(body[segmentStart...])))
+            if breakIndex < body.endIndex {
+                replacement.append(.stringBody(String(body[breakIndex...])))
             }
-        }
 
-        let insertedTokenCount = replacement.count - replacementRange.count
-        let insertionIndex = replacementRange.upperBound + 1
-        let rangeBeforeReplacement = range
-        replaceTokens(in: replacementRange, with: replacement)
-        if let rangeBeforeReplacement, insertionIndex == rangeBeforeReplacement.upperBound {
-            range = rangeBeforeReplacement.lowerBound ..< rangeBeforeReplacement.upperBound + insertedTokenCount
+            let insertedTokenCount = replacement.count - 1
+            let insertionIndex = opportunity.bodyIndex + 1
+            let rangeBeforeReplacement = range
+            replaceToken(at: opportunity.bodyIndex, with: replacement)
+            if let rangeBeforeReplacement, insertionIndex == rangeBeforeReplacement.upperBound {
+                range = rangeBeforeReplacement.lowerBound ..< rangeBeforeReplacement.upperBound + insertedTokenCount
+            }
         }
     }
 
@@ -280,26 +410,13 @@ extension Formatter {
 
     func stringHasWrapOpportunity(from startOfString: Int, to endOfString: Int) -> Bool {
         var hasContentBefore = false
-        var scopeDepth = 0
+        var searchIndex = startOfString + 1
 
-        for currentIndex in startOfString + 1 ..< endOfString {
-            let token = tokens[currentIndex]
-            if token.isStartOfScope {
-                if scopeDepth == 0 {
-                    hasContentBefore = true
-                }
-                scopeDepth += 1
-                continue
-            } else if token.isEndOfScope, scopeDepth > 0 {
-                scopeDepth -= 1
-                continue
-            } else if scopeDepth > 0 {
-                continue
-            }
-
-            guard case let .stringBody(body) = token else {
-                continue
-            }
+        while let currentIndex = index(
+            in: searchIndex ..< endOfString,
+            where: { $0.isStringBody }
+        ), case let .stringBody(body) = tokens[currentIndex] {
+            hasContentBefore = hasContentBefore || currentIndex > searchIndex
             var searchStart = body.startIndex
             while let range = body.range(
                 of: "[ \t]+",
@@ -315,6 +432,7 @@ extension Formatter {
             }
 
             hasContentBefore = hasContentBefore || searchStart < body.endIndex || currentIndex + 1 < endOfString
+            searchIndex = currentIndex + 1
         }
 
         return false

@@ -27,6 +27,25 @@ final class WrapStringsTests: XCTestCase {
                        options: FormatOptions(maxWidth: 24))
     }
 
+    func testWrapMultilineStringAtWidthBoundary() {
+        let input = #"""
+        let text = """
+        1234 5678
+        """
+        """#
+        let output = #"""
+        let text = """
+        1234 \
+        5678
+        """
+        """#
+
+        testFormatting(for: input, rule: .wrapStrings,
+                       options: FormatOptions(maxWidth: 9), exclude: [.indent, .wrap])
+        testFormatting(for: input, output, rule: .wrapStrings,
+                       options: FormatOptions(maxWidth: 8), exclude: [.indent, .wrap])
+    }
+
     func testWrapMultilineStringWithIndentation() {
         let input = #"""
         func makeText() -> String {
@@ -114,6 +133,34 @@ final class WrapStringsTests: XCTestCase {
                        options: FormatOptions(maxWidth: 25))
     }
 
+    func testWrapNestedMultilineString() {
+        let input = #"""
+        let text = """
+        outer
+        \(
+            """
+            This is a very long nested string that should wrap
+            """
+        )
+        """
+        """#
+        let output = #"""
+        let text = """
+        outer
+        \(
+            """
+            This is a very long \
+            nested string that \
+            should wrap
+            """
+        )
+        """
+        """#
+
+        testFormatting(for: input, output, rule: .wrapStrings,
+                       options: FormatOptions(maxWidth: 30))
+    }
+
     func testWrapBeforeExistingContinuation() {
         let input = #"""
         let text = """
@@ -150,6 +197,29 @@ final class WrapStringsTests: XCTestCase {
         testFormatting(for: input, output, rule: .wrapStrings, options: options)
     }
 
+    func testConvertSingleLineStringAtWidthBoundaryWhenAlways() {
+        let input = #"""
+        let s = "one two"
+        """#
+        let output = #"""
+        let s = """
+        one two
+        """
+        """#
+
+        testFormatting(
+            for: input,
+            rule: .wrapStrings,
+            options: FormatOptions(wrapStrings: .always, maxWidth: 17)
+        )
+        testFormatting(
+            for: input,
+            output,
+            rule: .wrapStrings,
+            options: FormatOptions(wrapStrings: .always, maxWidth: 16)
+        )
+    }
+
     func testWrapRawSingleLineStringWhenAlways() {
         let input = ###"""
         let text = ##"A raw string with \##n escape and enough words to wrap safely"##
@@ -183,6 +253,22 @@ final class WrapStringsTests: XCTestCase {
         testFormatting(for: input, output, rule: .wrapStrings, options: options)
     }
 
+    func testWrapRawSingleLineStringAroundInterpolationWhenAlways() {
+        let input = ##"""
+        let text = #"A long prefix before \#(value) and some trailing words"#
+        """##
+        let output = ##"""
+        let text = #"""
+        A long prefix before \#
+        \#(value) and some trailing \#
+        words
+        """#
+        """##
+        let options = FormatOptions(wrapStrings: .always, maxWidth: 30)
+
+        testFormatting(for: input, output, rule: .wrapStrings, options: options)
+    }
+
     func testWrapSingleLineStringAroundInterpolationWhenAlways() {
         let input = #"""
         let text = "A long prefix before \(value) and some trailing words"
@@ -200,16 +286,20 @@ final class WrapStringsTests: XCTestCase {
         testFormatting(for: input, output, rule: .wrapStrings, options: options)
     }
 
-    func testNoConvertNestedSingleLineStringsWhenAlways() throws {
+    func testConvertOutermostStringWithoutConvertingNestedStringsWhenAlways() {
         let input = #"""
         let text = "prefix \("middle \("inner words") trailing words") more trailing words"
         """#
+        let output = #"""
+        let text = """
+        prefix \
+        \("middle \("inner words") trailing words") \
+        more trailing words
+        """
+        """#
         let options = FormatOptions(wrapStrings: .always, maxWidth: 24)
-        let output = try format(input, rules: [.wrapStrings], options: options).output
 
-        XCTAssertNotEqual(output, input)
-        XCTAssertTrue(output.contains(#""middle \("inner words") trailing words""#))
-        XCTAssertEqual(try format(output, rules: [.wrapStrings], options: options).output, output)
+        testFormatting(for: input, output, rule: .wrapStrings, options: options)
     }
 
     func testNoConvertSingleLineStringWithWhitespaceOnlyInNestedStringWhenAlways() {
@@ -219,6 +309,53 @@ final class WrapStringsTests: XCTestCase {
         let options = FormatOptions(wrapStrings: .always, maxWidth: 24)
 
         testFormatting(for: input, rule: .wrapStrings, options: options)
+    }
+
+    func testNoConvertSingleLineStringContainingMultilineInterpolation() throws {
+        let input = #"""
+        let text = "prefix \(1 +
+            2) trailing words that exceed the width"
+        """#
+        let options = FormatOptions(wrapStrings: .always, maxWidth: 24)
+
+        XCTAssertEqual(
+            try format(input, rules: [.wrapStrings], options: options).output,
+            input
+        )
+    }
+
+    func testNoWrapStringsContainingSourceLocationLiterals() {
+        let input = #"""
+        let line = "A long prefix before \(#line) and some trailing words"
+        let column = """
+        A long prefix before \(#column) and some trailing words
+        """
+        """#
+        let options = FormatOptions(wrapStrings: .always, maxWidth: 24)
+
+        testFormatting(for: input, rule: .wrapStrings, options: options, exclude: [.wrap])
+    }
+
+    func testNoWrapNestedMultilineStringInsideStringContainingSourceLocationLiteral() throws {
+        let input = #"""
+        let text = """
+        \(
+            """
+            This is a very long nested string that would otherwise wrap
+            """
+        )
+        \(#line)
+        """
+        """#
+
+        XCTAssertEqual(
+            try format(
+                input,
+                rules: [.wrapStrings],
+                options: FormatOptions(maxWidth: 24)
+            ).output,
+            input
+        )
     }
 
     func testWrapIndentedSingleLineStringWhenAlways() {
@@ -236,6 +373,70 @@ final class WrapStringsTests: XCTestCase {
         }
         """#
         let options = FormatOptions(wrapStrings: .always, maxWidth: 28)
+
+        testFormatting(for: input, output, rule: .wrapStrings, options: options)
+    }
+
+    func testWrapSingleLineStringWithTabIndentationWhenAlways() {
+        let input = #"""
+        struct Foo {
+        \#tlet text = "This is an indented string that should wrap"
+        }
+        """#
+        let output = #"""
+        struct Foo {
+        \#tlet text = """
+        \#tThis is an indented \
+        \#tstring that should wrap
+        \#t"""
+        }
+        """#
+        let options = FormatOptions(
+            indent: "\t",
+            wrapStrings: .always,
+            tabWidth: 2,
+            maxWidth: 26
+        )
+
+        testFormatting(for: input, output, rule: .wrapStrings, options: options)
+    }
+
+    func testWrapMultilineStringAtTab() {
+        let input = #"""
+        let text = """
+        1234\#t5678
+        """
+        """#
+        let output = #"""
+        let text = """
+        1234\#t\
+        5678
+        """
+        """#
+        let options = FormatOptions(tabWidth: 4, maxWidth: 9)
+
+        testFormatting(
+            for: input,
+            output,
+            rule: .wrapStrings,
+            options: options,
+            exclude: [.indent, .wrap]
+        )
+    }
+
+    func testWrapStringUsingConfiguredLinebreak() {
+        let input = #"""
+        let text = """
+        This is a very long string that should wrap
+        """
+        """#.replacingOccurrences(of: "\n", with: "\r\n")
+        let output = #"""
+        let text = """
+        This is a very long \
+        string that should wrap
+        """
+        """#.replacingOccurrences(of: "\n", with: "\r\n")
+        let options = FormatOptions(linebreak: "\r\n", maxWidth: 24)
 
         testFormatting(for: input, output, rule: .wrapStrings, options: options)
     }
@@ -263,25 +464,6 @@ final class WrapStringsTests: XCTestCase {
 
         testFormatting(for: input, rule: .wrapStrings,
                        options: FormatOptions(maxWidth: 20))
-    }
-
-    func testNoWrapSingleLineStringWhenMultilineOnly() {
-        let input = #"""
-        let text = "This is a very long single-line string"
-        """#
-        var options = FormatOptions(wrapStrings: .multilineOnly)
-        options.maxWidth = 20
-
-        testFormatting(for: input, rule: .wrapStrings, options: options)
-    }
-
-    func testNoWrapShortSingleLineStringWhenAlways() {
-        let input = #"""
-        let text = "short words"
-        """#
-        let options = FormatOptions(wrapStrings: .always, maxWidth: 80)
-
-        testFormatting(for: input, rule: .wrapStrings, options: options)
     }
 
     func testNoWrapEmptyRawSingleLineStringWhenAlways() {
@@ -320,12 +502,12 @@ final class WrapStringsTests: XCTestCase {
     func testNoWrapUnbreakableOrShortSingleLineStringsWhenAlways() {
         let input = #"""
         let url = "https://example.com/a-very-long-path-without-whitespace"
-        let aVeryLongVariableNameThatExceedsTheMaximumWidth = "short"
+        let aVeryLongVariableNameThatExceedsTheMaximumWidth = "short words"
         """#
         let outputWithWrap = #"""
         let url = "https://example.com/a-very-long-path-without-whitespace"
         let aVeryLongVariableNameThatExceedsTheMaximumWidth =
-            "short"
+            "short words"
         """#
         var options = FormatOptions(wrapStrings: .always)
         options.maxWidth = 24
@@ -364,6 +546,90 @@ final class WrapStringsTests: XCTestCase {
         testFormatting(for: input, rule: .wrapStrings, options: options)
     }
 
+    func testNoWrapMalformedStringScopes() throws {
+        let inputs = [
+            #"""
+            let text = "A long unterminated string with words to wrap
+            """#,
+            ##"""
+            let text = #"A long unterminated raw string with words to wrap
+            """##,
+            #"""
+            let text = """
+            Long words before \(value
+            and trailing words that would otherwise wrap
+            """
+            """#,
+        ]
+        let options = FormatOptions(maxWidth: 20, fragment: true)
+
+        for input in inputs {
+            XCTAssertEqual(
+                try format(input, rules: [.wrapStrings], options: options).output,
+                input
+            )
+        }
+    }
+
+    func testNoWrapNestedMultilineStringInsideMalformedString() throws {
+        let input = #"""
+        let text = """
+        \(
+            """
+            This is a very long nested string that would otherwise wrap
+            """
+        )
+        """#
+        let options = FormatOptions(maxWidth: 24, fragment: true)
+
+        XCTAssertEqual(
+            try format(input, rules: [.wrapStrings], options: options).output,
+            input
+        )
+    }
+
+    func testMalformedStringDoesNotSuppressFollowingValidString() throws {
+        let input = #"""
+        let malformed = "An unterminated string
+        let valid = "This is a valid string with enough words to wrap"
+        """#
+        let output = #"""
+        let malformed = "An unterminated string
+        let valid = """
+        This is a valid \
+        string with enough \
+        words to wrap
+        """
+        """#
+        let options = FormatOptions(wrapStrings: .always, maxWidth: 20, fragment: true)
+
+        XCTAssertEqual(
+            try format(input, rules: [.wrapStrings], options: options).output,
+            output
+        )
+    }
+
+    func testMalformedRegexDoesNotSuppressFollowingValidString() throws {
+        let input = #"""
+        let malformed = /unterminated
+        let valid = "This is a valid string with enough words to wrap"
+        """#
+        let output = #"""
+        let malformed = /unterminated
+        let valid = """
+        This is a valid \
+        string with enough \
+        words to wrap
+        """
+        """#
+        let options = FormatOptions(wrapStrings: .always, maxWidth: 20, fragment: true)
+
+        XCTAssertEqual(
+            try format(input, rules: [.wrapStrings], options: options).output,
+            output
+        )
+    }
+
     func testNoWrapAcrossDisableDirectiveInInterpolation() throws {
         let input = #"""
         let text = """
@@ -379,22 +645,134 @@ final class WrapStringsTests: XCTestCase {
             ).output,
             input
         )
+
+        let tokens = tokenize(input)
+        let trailingBodyIndex = try XCTUnwrap(tokens.lastIndex(where: \.isStringBody))
+        XCTAssertEqual(
+            try sourceCode(for: format(
+                tokens,
+                rules: [.wrapStrings],
+                options: FormatOptions(maxWidth: 24),
+                range: trailingBodyIndex ..< trailingBodyIndex + 1
+            ).tokens),
+            input
+        )
     }
 
-    func testWrapSingleLineStringBeforeTrailingDirectiveWhenAlways() {
+    func testNoConvertSingleLineStringBeforeTrailingDirectiveWhenAlways() {
         let input = #"""
-        let text = "This is a very long ordinary string that should wrap" // swiftformat:disable:next wrapStrings
+        let first = "This is a very long ordinary string that should wrap" // swiftformat:disable:next wrapStrings
+        let second = "This is another very long ordinary string that should stay unchanged"
+        let third = "This is a third very long ordinary string that should wrap"
         """#
         let output = #"""
-        let text = """
-        This is a very long \
-        ordinary string that \
-        should wrap
-        """ // swiftformat:disable:next wrapStrings
+        let first = "This is a very long ordinary string that should wrap" // swiftformat:disable:next wrapStrings
+        let second = "This is another very long ordinary string that should stay unchanged"
+        let third = """
+        This is a third very \
+        long ordinary string \
+        that should wrap
+        """
         """#
         let options = FormatOptions(wrapStrings: .always, maxWidth: 24)
 
         testFormatting(for: input, output, rule: .wrapStrings, options: options, exclude: [.wrap])
+    }
+
+    func testTrailingOptionsDirectiveDoesNotAffectPreviousStringLine() {
+        let input = #"""
+        let text = """
+        This is a very long string that should wrap
+        """ // swiftformat:options:this --maxwidth 10
+        """#
+        let output = #"""
+        let text = """
+        This is a very long \
+        string that should wrap
+        """ // swiftformat:options:this --maxwidth 10
+        """#
+
+        testFormatting(for: input, output, rule: .wrapStrings,
+                       options: FormatOptions(maxWidth: 24), exclude: [.wrap])
+    }
+
+    func testNoWrapMultilineStringBeforePreviousDirective() throws {
+        let input = #"""
+        let text = """
+        This  is a very long string that would otherwise wrap
+        """ // swiftformat:disable:previous consecutiveSpaces
+        """#
+
+        XCTAssertEqual(
+            try format(
+                input,
+                rules: [.consecutiveSpaces, .wrapStrings],
+                options: FormatOptions(maxWidth: 24)
+            ).output,
+            input
+        )
+    }
+
+    func testWrapMultilineStringAfterWrapInsertsLinebreakInInterpolation() {
+        let input = #"""
+        let text = """
+        prefix words here \(foo(first: 1, second: 2, third: 3)) trailing words that should wrap
+        """
+        """#
+        let output = #"""
+        let text = """
+        prefix words here \(foo(
+            first: 1,
+            second: 2,
+            third: 3
+        )) trailing words that \
+        should wrap
+        """
+        """#
+        let options = FormatOptions(wrapStringInterpolation: true, maxWidth: 30)
+
+        testFormatting(for: input, [output], rules: [.wrap, .wrapStrings], options: options)
+    }
+
+    func testWrapMultilineStringAfterPersistentMaxWidthDirective() {
+        let input = #"""
+        // swiftformat:options --maxwidth 20
+        let text = """
+        This is a very long string that should wrap
+        """
+        """#
+        let output = #"""
+        // swiftformat:options --maxwidth 20
+        let text = """
+        This is a very \
+        long string that \
+        should wrap
+        """
+        """#
+
+        testFormatting(
+            for: input,
+            output,
+            rule: .wrapStrings,
+            options: FormatOptions(maxWidth: 0),
+            exclude: [.wrap]
+        )
+    }
+
+    func testNoWrapMultilineStringAfterDisablingMaxWidthDirective() {
+        let input = #"""
+        // swiftformat:options --maxwidth none
+        let text = """
+        This is a very long string that should remain unchanged
+        """
+        """#
+
+        testFormatting(
+            for: input,
+            rule: .wrapStrings,
+            options: FormatOptions(maxWidth: 20),
+            exclude: [.wrap]
+        )
     }
 
     func testWrapMultilineStringWithinFormattingRange() throws {
@@ -436,6 +814,31 @@ final class WrapStringsTests: XCTestCase {
                 range: bodyIndex ..< bodyIndex + 1
             ).tokens),
             input
+        )
+    }
+
+    func testConvertSingleLineStringWithinFormattingRange() throws {
+        let input = #"""
+        let untouched = "This string should remain unchanged despite being long"
+        let text = "This is a very long ordinary string that should wrap" // selected
+        """#
+        let output = #"""
+        let untouched = "This string should remain unchanged despite being long"
+        let text = """
+        This is a very long \
+        ordinary string that \
+        should wrap
+        """ // selected
+        """#
+
+        XCTAssertEqual(
+            try format(
+                input,
+                rules: [.wrapStrings],
+                options: FormatOptions(wrapStrings: .always, maxWidth: 24),
+                lineRange: 2 ... 2
+            ).output,
+            output
         )
     }
 
@@ -487,6 +890,89 @@ final class WrapStringsTests: XCTestCase {
                        options: FormatOptions(maxWidth: 0))
     }
 
+    func testDeeplyNestedSingleLineStringsDoNotExhaustResources() throws {
+        let depth = 5000
+        let literal = String(repeating: "\"prefix \\(", count: depth) +
+            "\"leaf\"" + String(repeating: ") suffix\"", count: depth)
+        let input = """
+        let text = \(literal)
+        """
+        let options = FormatOptions(wrapStrings: .always, maxWidth: input.count + 1)
+
+        XCTAssertEqual(
+            try format(input, rules: [.wrapStrings], options: options).output,
+            input
+        )
+    }
+
+    func testDeeplyNestedMultilineStringsDoNotExhaustResources() throws {
+        let depth = 5000
+        let openingScopes = (0 ..< depth).flatMap { index in
+            [
+                Token.stringBody("\\"),
+                .startOfScope("("),
+                .startOfScope("\"\"\""),
+                .linebreak("\n", index + 2),
+            ]
+        }
+        let closingScopes = (0 ..< depth).flatMap { index in
+            [
+                Token.endOfScope("\"\"\""),
+                .endOfScope(")"),
+                .linebreak("\n", depth + index + 3),
+            ]
+        }
+        let tokens = [Token.startOfScope("\"\"\""), .linebreak("\n", 1)] +
+            openingScopes + [.stringBody("leaf"), .linebreak("\n", depth + 2)] +
+            closingScopes + [.endOfScope("\"\"\"")]
+        let options = FormatOptions(maxWidth: tokens.count + 1)
+
+        XCTAssertEqual(
+            try format(tokens, rules: [.wrapStrings], options: options).tokens,
+            tokens
+        )
+    }
+
+    func testManyInterpolationsOnOneLineDoNotExhaustResources() throws {
+        let interpolationCount = 5000
+        let interpolations = (0 ..< interpolationCount).flatMap { _ in
+            [
+                Token.stringBody("x\\"),
+                .startOfScope("("),
+                .identifier("value"),
+                .endOfScope(")"),
+            ]
+        }
+        let tokens = [Token.startOfScope("\"\"\""), .linebreak("\n", 1)] +
+            interpolations + [.linebreak("\n", 2), .endOfScope("\"\"\"")]
+        let options = FormatOptions(maxWidth: interpolationCount * 10)
+
+        XCTAssertEqual(
+            try format(tokens, rules: [.wrapStrings], options: options).tokens,
+            tokens
+        )
+    }
+
+    func testManyStringsOnOneLineDoNotExhaustResources() throws {
+        let stringCount = 5000
+        let strings = (0 ..< stringCount).flatMap { _ in
+            [
+                Token.startOfScope("\""),
+                .stringBody("value"),
+                .endOfScope("\""),
+                .delimiter(","),
+                .space(" "),
+            ]
+        }
+        let tokens = [Token.startOfScope("[")] + strings + [.endOfScope("]")]
+        let options = FormatOptions(wrapStrings: .always, maxWidth: stringCount * 10)
+
+        XCTAssertEqual(
+            try format(tokens, rules: [.wrapStrings], options: options).tokens,
+            tokens
+        )
+    }
+
     func testWrapLargeMultilineString() throws {
         let body = Array(repeating: "word", count: 1000).joined(separator: " ")
         let input = """
@@ -494,13 +980,10 @@ final class WrapStringsTests: XCTestCase {
         \(body)
         \"""
         """
-        let output = try format(
-            input,
-            rules: [.wrapStrings],
-            options: FormatOptions(maxWidth: 80)
-        ).output
+        let options = FormatOptions(maxWidth: 80)
+        let output = try format(input, rules: [.wrapStrings], options: options).output
 
-        XCTAssertEqual(output.replacingOccurrences(of: "\\\n", with: ""), input)
+        try assertLargeStringWasWrapped(output, preserving: input, options: options)
     }
 
     func testWrapLargeExistingMultilineString() throws {
@@ -511,13 +994,10 @@ final class WrapStringsTests: XCTestCase {
         \(body)
         \"""
         """
-        let output = try format(
-            input,
-            rules: [.wrapStrings],
-            options: FormatOptions(maxWidth: 80)
-        ).output
+        let options = FormatOptions(maxWidth: 80)
+        let output = try format(input, rules: [.wrapStrings], options: options).output
 
-        XCTAssertEqual(output.replacingOccurrences(of: "\\\n", with: ""), input)
+        try assertLargeStringWasWrapped(output, preserving: input, options: options)
     }
 
     func testWrapLargeInterpolatedMultilineString() throws {
@@ -527,12 +1007,24 @@ final class WrapStringsTests: XCTestCase {
         \(body)
         \"\"\"
         """
-        let output = try format(
-            input,
-            rules: [.wrapStrings],
-            options: FormatOptions(maxWidth: 80)
-        ).output
+        let options = FormatOptions(maxWidth: 80)
+        let output = try format(input, rules: [.wrapStrings], options: options).output
 
+        try assertLargeStringWasWrapped(output, preserving: input, options: options)
+    }
+
+    private func assertLargeStringWasWrapped(
+        _ output: String,
+        preserving input: String,
+        options: FormatOptions
+    ) throws {
+        XCTAssertNotEqual(output, input)
+        XCTAssertTrue(output.contains("\\\n"))
+        XCTAssertTrue(output.split(separator: "\n").allSatisfy { $0.count <= options.maxWidth })
         XCTAssertEqual(output.replacingOccurrences(of: "\\\n", with: ""), input)
+        XCTAssertEqual(
+            try format(output, rules: [.wrapStrings], options: options).output,
+            output
+        )
     }
 }

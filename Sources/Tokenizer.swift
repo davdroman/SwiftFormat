@@ -1816,6 +1816,19 @@ public func tokenize(_ source: String) -> [Token] {
         return nil
     }
 
+    func convertKeywordToIdentifier(at keywordIndex: Int) {
+        guard case let .keyword(name) = tokens[keywordIndex] else {
+            return
+        }
+        tokens[keywordIndex] = .identifier(name)
+        if let operatorIndex = index(
+            of: .nonSpaceOrCommentOrLinebreak,
+            before: keywordIndex
+        ), tokens[operatorIndex].isOperator {
+            setOperatorType(at: operatorIndex)
+        }
+    }
+
     func processToken() {
         var count = tokens.count
         var token = tokens[count - 1]
@@ -1824,7 +1837,7 @@ public func tokenize(_ source: String) -> [Token] {
            case let .keyword(name) = tokens[prevIndex],
            ["consume", "discard"].contains(name)
         {
-            tokens[prevIndex] = .identifier(name)
+            convertKeywordToIdentifier(at: prevIndex)
         }
         switch token {
         case let .keyword(name):
@@ -1922,12 +1935,17 @@ public func tokenize(_ source: String) -> [Token] {
                     break
                 }
             }
-            if let lastOperatorIndex = index(of: .operator, before: count - 1) {
+            if let lastOperatorIndex = index(
+                of: .nonSpaceOrCommentOrLinebreak,
+                before: count - 1
+            ), tokens[lastOperatorIndex].isOperator {
                 // Set operator type
                 setOperatorType(at: lastOperatorIndex)
             }
         }
         // Handle scope
+        let canInvalidateGenericScope = token.isOperator || token == .delimiter(":") ||
+            token.isKeywordOrAttribute || token.isEndOfScope
         if let scopeIndex = scopeIndexStack.last {
             let scope = tokens[scopeIndex]
             if token.isEndOfScope(scope) {
@@ -1964,7 +1982,7 @@ public func tokenize(_ source: String) -> [Token] {
                     closedGenericScopeIndexes.removeAll()
                 }
                 return
-            } else if let scopeIndex = scopeIndexStack.last(where: {
+            } else if canInvalidateGenericScope, let scopeIndex = scopeIndexStack.last(where: {
                 tokens[$0] == .startOfScope("<")
             }) {
                 // We think it's a generic at this point, but could be wrong
@@ -2003,12 +2021,12 @@ public func tokenize(_ source: String) -> [Token] {
                    tokens[prevIndex].isIdentifierOrKeyword
                 {
                     if case let .keyword(name) = tokens[prevIndex], !name.isAttribute {
-                        tokens[prevIndex] = .identifier(name)
+                        convertKeywordToIdentifier(at: prevIndex)
                     }
                     if let prevPrevIndex = index(of: .nonSpaceOrCommentOrLinebreak, before: prevIndex),
                        case let .keyword(name) = tokens[prevPrevIndex], !name.isAttribute
                     {
-                        tokens[prevPrevIndex] = .identifier(name)
+                        convertKeywordToIdentifier(at: prevPrevIndex)
                     }
                 }
             } else if case let .keyword(string) = token {
@@ -2130,9 +2148,9 @@ public func tokenize(_ source: String) -> [Token] {
             tokens[count - 1] = .error(string)
         case .delimiter(":"):
             if let prevIndex = index(of: .nonSpaceOrCommentOrLinebreak, before: count - 1),
-               case let .keyword(name) = tokens[prevIndex]
+               case .keyword = tokens[prevIndex]
             {
-                tokens[prevIndex] = .identifier(name)
+                convertKeywordToIdentifier(at: prevIndex)
             }
         default:
             break
